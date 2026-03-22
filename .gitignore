@@ -201,6 +201,10 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Project-local generated data and secrets
+.streamlit/secrets.toml
+data/chroma/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

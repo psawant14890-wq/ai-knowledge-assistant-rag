@@ -1,28 +1,27 @@
-# AI Knowledge Assistant (RAG Chatbot)
+# AI Knowledge Assistant
 
-A Retrieval-Augmented Generation (RAG) chatbot that allows users to query PDF documents using natural language.
+RAG-based knowledge assistant built with Streamlit, OpenAI, Chroma, PDF ingestion, and website ingestion.
 
 ## Features
-- Upload PDF documents
-- Ask questions based on document content
-- Semantic search using embeddings
-- Context-aware AI responses
+- Multi-PDF ingestion
+- Website URL ingestion
+- Chroma-backed retrieval
+- Chat history-aware answers
+- Knowledge base summarization
+- Chat summarization
+- Suggested follow-up questions
+- Downloadable chat transcript and source overview
 
-## Tech Stack
+## Stack
 - Python
-- LangChain
-- FAISS
 - Streamlit
+- OpenAI API
+- ChromaDB
+- pypdf
+- requests
+- BeautifulSoup
 
-## Architecture
-User Query → Embeddings → Vector DB (FAISS) → Retriever → LLM → Response
-
-## Challenges Faced
-- Handling large PDFs
-- Optimizing chunk size
-- Improving retrieval accuracy
-
-## Future Improvements
-- Multi-document support
-- Chat history
-- Web URL ingestion
+## Run
+1. Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or your environment.
+2. Install dependencies with `pip install -r requirements.txt`.
+3. Start the app with `streamlit run app.py`.

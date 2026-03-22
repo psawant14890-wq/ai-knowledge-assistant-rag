@@ -1,154 +1,160 @@
-from langgraph.graph import StateGraph, END
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel
-from typing import TypedDict, List
-from langchain_core.output_parsers import StrOutputParser
-from langchain.prompts import PromptTemplate
-from langchain.memory import ConversationBufferMemory
-
-from router import route, RouteQuery
-from ingestion import PDFIngestor
+from openai import OpenAI
 
 
-class GraphState(TypedDict):
-    question: str
-    response: str
-    documents: List[str]
+class KnowledgeAssistant:
+    def __init__(self, api_key, ingestor):
+        self.client = OpenAI(api_key=api_key)
+        self.ingestor = ingestor
 
+    def ask(self, question, chat_history, answer_style="Balanced"):
+        retrieved_docs = self.ingestor.retrieve(question, limit=5)
+        history_text = self._history_to_text(chat_history)
+        context = self._format_retrieved_docs(retrieved_docs)
+        citations = self._extract_citations(retrieved_docs)
 
-class PdfChat:
-    def __init__(self, api_key, retriever):
-        self.model = ChatOpenAI(api_key=api_key, model="gpt-4o-mini-2024-07-18", temperature=0)  # minimum costing model
-        builder = StateGraph(GraphState)
-        builder.add_node("retrieve", self.retrieve_node)
-        builder.add_node("boost_question", self.boost_question)
-        builder.add_node("structer_document", self.structer_document)
-        builder.add_node("generate_with_rag", self.generate_with_doc)
-        builder.add_node("generate", self.generate_wo_doc)
+        prompt = f"""You are an expert knowledge assistant.
+Answer the user's question using the retrieved context whenever possible.
+If the context does not contain the answer, say so clearly and then provide the most helpful next step.
+Never fabricate facts, citations, or source names.
+Use the requested answer style: {answer_style}.
 
-        builder.set_entry_point("boost_question")
-        builder.add_conditional_edges(
-            "boost_question",
-            self.decide_retrieve,
-            {
-                "retrieve": "retrieve",
-                "generate": "generate"
-            }
+Conversation history:
+{history_text or "No previous conversation."}
+
+Retrieved context:
+{context or "No relevant context was retrieved."}
+
+Question:
+{question}
+"""
+        response = self._generate_text(prompt)
+        return {"response": response, "citations": citations}
+
+    def summarize_knowledge_base(self):
+        summary_chunks = self.ingestor.get_summary_documents(limit=12)
+        if not summary_chunks:
+            return "No knowledge sources are loaded yet."
+
+        context = "\n\n".join(
+            f"Source: {chunk['metadata']['source_name']}\n"
+            f"Location: {chunk['metadata']['location']}\n"
+            f"Content: {chunk['content']}"
+            for chunk in summary_chunks
         )
-        builder.add_edge("retrieve", "structer_document")
-        builder.add_edge("structer_document", "generate_with_rag")
-        builder.add_edge("generate_with_rag", END)
-        builder.add_edge("generate", END)
+        prompt = f"""You are summarizing a knowledge base built from PDFs and web pages.
+Write a practical summary with:
+1. The main topics covered.
+2. The most important facts or ideas.
+3. Any notable gaps or limitations in the sources.
+4. Two suggested follow-up questions a user should ask next.
 
-        self.retriever = retriever
+Knowledge base content:
+{context}
+"""
+        return self._generate_text(prompt)
 
-        self.graph = builder.compile()
+    def summarize_chat(self, chat_history):
+        if not chat_history or len(chat_history) <= 1:
+            return "No conversation history is available to summarize yet."
 
-        self.graph.get_graph().draw_mermaid_png(output_file_path="graph.png")
-        self.memory = ConversationBufferMemory()
+        prompt = f"""Summarize this conversation between a user and an AI assistant.
+Include:
+1. The user's main goals and questions.
+2. The assistant's key answers.
+3. Any unresolved items.
+4. The most useful next actions.
 
-    def decide_retrieve(self, state: GraphState):
-        question = state["question"]
-        memory = self.memory.load_memory_variables({})
-        source: RouteQuery = route(self.model, memory).invoke({"question": question})
-        if source.datasource == "vectorstore":
-            return "retrieve"
-        else:
-            return "generate"
+Conversation:
+{self._history_to_text(chat_history, limit=20)}
+"""
+        return self._generate_text(prompt)
 
-    def boost_question(self, state: GraphState):
-        question = state["question"]
-        memory = self.memory.load_memory_variables({})
-        prompt = """You are an assistant in a question-answering tasks.
-                    You have to boost the question to help search in vectorstore.
-                    Don't make up random names.
-                    Return a better structred question for vectorstore search, but don't make it longer
-                    \n
-                    Conversation history: {memory}
-                    \n
-                    Question: {question}
-                """
-        prompt = PromptTemplate.from_template(prompt)
-        chain = prompt | self.model | StrOutputParser()
+    def suggest_questions(self):
+        suggestion_chunks = self.ingestor.get_summary_documents(limit=8)
+        if not suggestion_chunks:
+            return []
 
-        question = chain.invoke({"question": question, "memory": memory})
+        context = "\n\n".join(
+            f"Source: {chunk['metadata']['source_name']}\nContent: {chunk['content'][:500]}"
+            for chunk in suggestion_chunks
+        )
+        prompt = f"""You are helping a user explore a knowledge base.
+Based on the sources below, suggest exactly 4 short, useful questions a user could ask next.
+Return one question per line without numbering.
 
-        return {"question": question}
+Sources:
+{context}
+"""
+        text = self._generate_text(prompt)
+        suggestions = [
+            line.strip("- ").strip()
+            for line in text.splitlines()
+            if line.strip()
+        ]
+        return suggestions[:4]
 
+    def _generate_text(self, prompt):
+        response = self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You produce grounded, concise, helpful answers.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content.strip()
 
-    def retrieve_node(self, state: GraphState):
-        question = state["question"]
+    @staticmethod
+    def _history_to_text(chat_history, limit=12):
+        if not chat_history:
+            return ""
 
-        documents = self.retriever.invoke(question)
-        if not documents:
-            return "I couldn't find any relevant documents. Can you please rephrase your question?"
+        return "\n".join(
+            f"{message['role'].title()}: {message['content']}"
+            for message in chat_history[-limit:]
+        )
 
-        return {"documents": documents}
+    @staticmethod
+    def _format_retrieved_docs(documents, max_chars=8000):
+        chunks = []
+        total_chars = 0
+        for document in documents:
+            metadata = document["metadata"]
+            chunk = (
+                f"Source: {metadata.get('source_name', 'Unknown source')}\n"
+                f"Location: {metadata.get('location', 'Unknown location')}\n"
+                f"Chunk: {metadata.get('chunk_index', 'N/A')}\n"
+                f"Content: {document['content']}"
+            )
+            if total_chars + len(chunk) > max_chars:
+                break
+            chunks.append(chunk)
+            total_chars += len(chunk)
+        return "\n\n".join(chunks)
 
-    def structer_document(self, state: GraphState):
-        documents = state["documents"]
-        question = state["question"]
-        documents = [doc.page_content for doc in documents]
-
-        prompt = """You are an expert assistant for question-answering tasks. 
-                    You have to restructure the documents for the question. 
-                    Keep it short, only knowledge that is relevant to the question.
-                    Don't make up random names.
-                    Return a better structured document for better understanding.
-                    \n
-                    Documents: {documents}
-                    \n
-                    Question: {question}
-                """
-        prompt = PromptTemplate.from_template(prompt)
-        chain = prompt | self.model | StrOutputParser()
-
-        document = chain.invoke({"question": question, "documents": documents})
-
-        return  {"documents": document}
-
-    def generate_with_doc(self, state: GraphState):
-        documents = state["documents"]
-        question = state["question"]
-        memory = self.memory.load_memory_variables({})
-
-        prompt = """"You are an expert assistant for question-answering tasks. 
-                    Use the provided documents as context to extract and answer the question. 
-                    Don't be lazy, check every details in the Context.
-                    If the answer is not mentioned in context, respond with 'I don't know.' 
-                    Keep your limited to three sentences.
-                    \n
-                    Conversation history: {memory}
-                    \n
-                    Context: {context}
-                    \n
-                    Question: {question} 
-                    \n
-                    Answer:
-                """
-        prompt = PromptTemplate.from_template(prompt)
-        chain = prompt | self.model | StrOutputParser()
-
-        response = chain.invoke({"memory": memory, "question": question, "context": documents})
-
-        self.memory.save_context(inputs={"input": question}, outputs={"output": response})
-
-        return {"response": response}
-
-    def generate_wo_doc(self, state: GraphState):
-        question = state["question"]
-        prompt = """You are an assistant for question-answering tasks. 
-                    If you don't know the answer, just say that you don't know.
-                    Don't forget to check previous conversations for context.
-                    Use three sentences maximum and keep the answer concise. 
-                    Conversation history: {memory} 
-                    Question: {question}
-                """
-        memory = self.memory.load_memory_variables({})
-        prompt = PromptTemplate.from_template(prompt)
-        chain = prompt | self.model | StrOutputParser()
-
-        response = chain.invoke({"memory": memory, "question": question})
-        self.memory.save_context(inputs={"input": question}, outputs={"output": response})
-
-        return {"response": response}
+    @staticmethod
+    def _extract_citations(documents):
+        citations = []
+        seen = set()
+        for document in documents:
+            metadata = document["metadata"]
+            citation_key = (
+                metadata.get("source_name", "Unknown source"),
+                metadata.get("location", "Unknown location"),
+                metadata.get("chunk_index", "N/A"),
+            )
+            if citation_key in seen:
+                continue
+            seen.add(citation_key)
+            citations.append(
+                {
+                    "source": citation_key[0],
+                    "location": citation_key[1],
+                    "chunk_index": citation_key[2],
+                    "snippet": document["content"][:220].strip(),
+                }
+            )
+        return citations

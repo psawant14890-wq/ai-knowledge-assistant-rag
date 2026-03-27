@@ -247,6 +247,31 @@ def clear_workspace():
     st.session_state.messages = [{"role": "assistant", "content": DEFAULT_MESSAGE}]
 
 
+def ask_question(question):
+    user_message = {"role": "user", "content": question}
+    st.session_state.messages.append(user_message)
+    render_message(user_message)
+
+    try:
+        with st.spinner("Thinking..."):
+            result = st.session_state.assistant.ask(
+                question,
+                st.session_state.messages[:-1],
+                answer_style=st.session_state.answer_style,
+            )
+    except Exception as exc:
+        st.error(format_app_error(exc))
+        return
+
+    assistant_message = {
+        "role": "assistant",
+        "content": result["response"],
+        "citations": result["citations"],
+    }
+    st.session_state.messages.append(assistant_message)
+    render_message(assistant_message)
+
+
 def format_app_error(exc):
     text = str(exc)
     lowered = text.lower()
@@ -444,6 +469,13 @@ with main_col:
                         f'<div class="suggestion-card">{suggestion}</div>',
                         unsafe_allow_html=True,
                     )
+                    if st.button(
+                        "Use Prompt",
+                        key=f"suggestion-{index}",
+                        use_container_width=True,
+                        disabled=st.session_state.assistant is None,
+                    ):
+                        ask_question(suggestion)
 
         question = st.chat_input(
             "Ask about a PDF, compare sources, or explore website content...",
@@ -452,27 +484,7 @@ with main_col:
         st.markdown("</div>", unsafe_allow_html=True)
 
         if question:
-            user_message = {"role": "user", "content": question}
-            st.session_state.messages.append(user_message)
-            render_message(user_message)
-
-            try:
-                with st.spinner("Thinking..."):
-                    result = st.session_state.assistant.ask(
-                        question,
-                        st.session_state.messages[:-1],
-                        answer_style=st.session_state.answer_style,
-                    )
-            except Exception as exc:
-                st.error(format_app_error(exc))
-            else:
-                assistant_message = {
-                    "role": "assistant",
-                    "content": result["response"],
-                    "citations": result["citations"],
-                }
-                st.session_state.messages.append(assistant_message)
-                render_message(assistant_message)
+            ask_question(question)
 
     with summary_tab:
         summary_col1, summary_col2 = st.columns(2)
